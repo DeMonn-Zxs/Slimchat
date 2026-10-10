@@ -136,7 +136,9 @@ db.exec(`
     verified INTEGER DEFAULT 0,
     discussionId TEXT,
     inFeed INTEGER DEFAULT 0,
-    topics TEXT
+    topics TEXT,
+    indevs INTEGER DEFAULT 0,
+    supporter INTEGER DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS chat_members (
@@ -145,6 +147,10 @@ db.exec(`
     role TEXT,
     canWrite INTEGER DEFAULT 1,
     pinned INTEGER DEFAULT 0,
+    archived INTEGER DEFAULT 0,
+    notifMuted INTEGER DEFAULT 0,
+    lastReadSeq INTEGER DEFAULT 0,
+    mutedUntil TEXT,
     joinedAt TEXT,
     PRIMARY KEY(chatId, userId)
   );
@@ -169,7 +175,17 @@ db.exec(`
     forwardedFrom TEXT,
     reactions TEXT,
     editedAt TEXT,
-    pinSeq INTEGER
+    pinSeq INTEGER,
+    giftCaption TEXT,
+    giftId TEXT,
+    giftPrice INTEGER DEFAULT 0,
+    giftRevealed INTEGER DEFAULT 0,
+    senderDeviceId TEXT,
+    envelopes TEXT,
+    views INTEGER DEFAULT 0,
+    edited INTEGER DEFAULT 0,
+    isSystem INTEGER DEFAULT 0,
+    updatedAt TEXT
   );
 
   CREATE TABLE IF NOT EXISTS chat_bans (
@@ -284,5 +300,39 @@ db.exec(`
     createdAt TEXT
   );
 `);
+
+// Safe column migrations for existing databases
+const migrations = [
+  'ALTER TABLE chat_members ADD COLUMN lastReadSeq INTEGER DEFAULT 0',
+  'ALTER TABLE chat_members ADD COLUMN notifMuted INTEGER DEFAULT 0',
+  'ALTER TABLE chat_members ADD COLUMN pinned INTEGER DEFAULT 0',
+  'ALTER TABLE chat_members ADD COLUMN archived INTEGER DEFAULT 0',
+  'ALTER TABLE chat_members ADD COLUMN mutedUntil TEXT',
+  'ALTER TABLE chat_members ADD COLUMN canWrite INTEGER DEFAULT 1',
+  'ALTER TABLE chats ADD COLUMN inFeed INTEGER DEFAULT 0',
+  'ALTER TABLE chats ADD COLUMN topics TEXT',
+  'ALTER TABLE chats ADD COLUMN discussionId TEXT',
+  'ALTER TABLE chats ADD COLUMN indevs INTEGER DEFAULT 0',
+  'ALTER TABLE chats ADD COLUMN supporter INTEGER DEFAULT 0',
+  'ALTER TABLE messages ADD COLUMN giftCaption TEXT',
+  'ALTER TABLE messages ADD COLUMN giftId TEXT',
+  'ALTER TABLE messages ADD COLUMN giftPrice INTEGER DEFAULT 0',
+  'ALTER TABLE messages ADD COLUMN giftRevealed INTEGER DEFAULT 0',
+  'ALTER TABLE messages ADD COLUMN senderDeviceId TEXT',
+  'ALTER TABLE messages ADD COLUMN envelopes TEXT',
+  'ALTER TABLE messages ADD COLUMN views INTEGER DEFAULT 0',
+  'ALTER TABLE messages ADD COLUMN edited INTEGER DEFAULT 0',
+  'ALTER TABLE messages ADD COLUMN isSystem INTEGER DEFAULT 0',
+  'ALTER TABLE messages ADD COLUMN updatedAt TEXT',
+  'ALTER TABLE messages ADD COLUMN forwardedFrom TEXT',
+];
+
+for (const sql of migrations) {
+  try {
+    db.prepare(sql).run();
+  } catch (_) {
+    // Column already exists
+  }
+}
 
 module.exports = db;

@@ -4759,6 +4759,15 @@ app.use((req, res) => {
   res.status(404).json({ error: `Path ${req.originalUrl} not found` });
 });
 
+// Global JSON error handler (prevents any HTML error responses)
+app.use((err, req, res, next) => {
+  console.error(`[SERVER ERROR] ${req.method} ${req.originalUrl}:`, err);
+  if (res.headersSent) {
+    return next(err);
+  }
+  res.status(500).json({ error: err.message || "Внутренняя ошибка сервера" });
+});
+
 // ==================== HTTP & WEBSOCKET SERVER ====================
 
 const server = http.createServer(app);
