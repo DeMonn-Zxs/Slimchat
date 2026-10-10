@@ -2983,11 +2983,25 @@ app.delete('/chats/:id/messages/:msgId', authRequired, (req, res) => {
   res.json({ status: 'ok' });
 });
 
-// Increment views
+// Increment views (unique per user)
 app.post('/chats/:id/messages/:msgId/view', authRequired, (req, res) => {
-  db.prepare('UPDATE messages SET views = views + 1 WHERE id = ?').run(req.params.msgId);
-  const msg = db.prepare('SELECT views FROM messages WHERE id = ?').get(req.params.msgId);
-  res.json({ viewCount: msg ? msg.views : 1 });
+  const { id: chatId, msgId } = req.params;
+  const userId = req.user.id;
+
+  try {
+    const alreadyViewed = db.prepare('SELECT 1 FROM message_views WHERE messageId = ? AND userId = ?').get(msgId, userId);
+    if (!alreadyViewed) {
+      db.prepare('INSERT OR IGNORE INTO message_views (messageId, userId, viewedAt) VALUES (?, ?, datetime("now"))')
+        .run(msgId, userId);
+      db.prepare('UPDATE messages SET views = COALESCE(views, 0) + 1 WHERE id = ?').run(msgId);
+    }
+  } catch (err) {
+    console.error('[View Error]', err);
+  }
+
+  const msg = db.prepare('SELECT views FROM messages WHERE id = ?').get(msgId);
+  const viewCount = msg && msg.views ? msg.views : 1;
+  res.json({ viewCount, views: viewCount, status: 'ok' });
 });
 
 // Pin/Unpin message

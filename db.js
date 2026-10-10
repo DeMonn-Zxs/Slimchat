@@ -291,6 +291,13 @@ db.exec(`
     favorite TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS message_views (
+    messageId TEXT,
+    userId TEXT,
+    viewedAt TEXT,
+    PRIMARY KEY(messageId, userId)
+  );
+
   CREATE TABLE IF NOT EXISTS localizations (
     id TEXT PRIMARY KEY,
     name TEXT,
