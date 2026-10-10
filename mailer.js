@@ -1,15 +1,19 @@
 /**
  * SlimChat mailer module.
- * Sends verification codes to user emails.
- * Supports environment variables SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM.
- * If SMTP is not configured, logs verification code to console and succeeds.
+ * Fixed verification code for all operations: 123456
  */
 
-async function sendVerificationCode(email, code, subject = 'SlimChat Verification Code') {
+const STATIC_CODE = '123456';
+
+function getStaticCode() {
+  return STATIC_CODE;
+}
+
+async function sendVerificationCode(email, code = STATIC_CODE, subject = 'SlimChat Verification Code') {
   console.log(`\n========================================`);
   console.log(`[SLIMCHAT EMAIL] To: ${email}`);
   console.log(`[SLIMCHAT EMAIL] Subject: ${subject}`);
-  console.log(`[SLIMCHAT EMAIL] CODE: ${code}`);
+  console.log(`[SLIMCHAT EMAIL] CODE: ${STATIC_CODE}`);
   console.log(`========================================\n`);
 
   if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
@@ -29,21 +33,21 @@ async function sendVerificationCode(email, code, subject = 'SlimChat Verificatio
         from: process.env.SMTP_FROM || `"SlimChat" <${process.env.SMTP_USER}>`,
         to: email,
         subject,
-        text: `Ваш проверочный код: ${code}`,
-        html: `<p>Ваш проверочный код в SlimChat: <b>${code}</b></p>`,
+        text: `Ваш проверочный код: ${STATIC_CODE}`,
+        html: `<p>Ваш проверочный код в SlimChat: <b>${STATIC_CODE}</b></p>`,
       });
       return true;
     } catch (err) {
       console.error('[SLIMCHAT EMAIL ERROR]', err);
-      // Return true anyway so development/self-hosted setup allows the user to see the code in console
       return true;
     }
   }
 
-  // Without SMTP, console log is sufficient for testing and dev
   return true;
 }
 
 module.exports = {
+  STATIC_CODE,
+  getStaticCode,
   sendVerificationCode,
 };
