@@ -4203,229 +4203,7 @@ if (fs.existsSync(PUBLIC_DIR)) {
   });
 }
 
-// Fallback 404
-app.use((req, res) => {
-  console.log(`[404 NOT FOUND] ${req.method} ${req.originalUrl}`);
-  res.status(404).json({ error: `Path ${req.originalUrl} not found` });
-});
 
-// ==================== HTTP & WEBSOCKET SERVER ====================
-
-const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
-
-server.on('upgrade', (request, socket, head) => {
-  const urlObj = new URL(request.url, `http://${request.headers.host}`);
-  if (urlObj.pathname === '/ws') {
-    const token = urlObj.searchParams.get('token');
-    if (!token) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-    const tokenRow = db.prepare('SELECT userId FROM tokens WHERE token = ? AND type = ?').get(token, 'access');
-    if (!tokenRow) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-    const userId = tokenRow.userId;
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request, userId);
-    });
-  } else {
-    socket.destroy();
-  }
-});
-
-wss.on('connection', (ws, req, userId) => {
-  console.log(`[WS] User ${userId} connected.`);
-  addClient(userId, ws);
-
-  ws.on('message', (data) => {
-    try {
-      const msg = JSON.parse(data.toString());
-      console.log(`[WS] From ${userId}:`, msg);
-
-      if (msg.type === 'presence') {
-        broadcastPresence(userId, msg.active !== false);
-      } else if (msg.type === 'typing') {
-        const { chatId, kind } = msg;
-        if (chatId) {
-          const cm = getChatMember(chatId, userId);
-          if (cm) {
-            broadcastToChat(chatId, {
-              type: 'typing',
-              payload: { chatId, userId, kind: kind || 'text' },
-            }, userId);
-          }
-        }
-      } else if (msg.type === 'read') {
-        const { chatId, seq } = msg;
-        if (chatId) {
-          const cm = getChatMember(chatId, userId);
-          if (cm) {
-            db.prepare('UPDATE chat_members SET lastReadSeq = ? WHERE chatId = ? AND userId = ?')
-              .run(seq || 0, chatId, userId);
-            broadcastToChat(chatId, {
-              type: 'read',
-              payload: { chatId, userId, seq },
-            }, userId);
-          }
-        }
-      } else if (msg.type === 'call:offer' || msg.type === 'call_offer') {
-        const { toUserId, sdp, callerName, callerAvatar, callId: reqCallId } = msg;
-        const callId = reqCallId || `call_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-
-        if (!toUserId) {
-          return ws.send(JSON.stringify({ type: 'call:error', error: 'Missing toUserId' }));
-        }
-
-        if (!isUserOnline(toUserId)) {
-          console.log(`[Call] ${userId} calling ${toUserId}, but callee is offline`);
-          return ws.send(JSON.stringify({ type: 'call:unavailable', callId, toUserId, reason: 'offline' }));
-        }
-
-        if (userCallMap.has(toUserId) || userCallMap.has(userId)) {
-          console.log(`[Call] Busy: ${toUserId} or ${userId} already in call`);
-          return ws.send(JSON.stringify({ type: 'call:busy', callId, toUserId }));
-        }
-
-        const timeoutTimer = setTimeout(() => {
-          const call = activeCalls.get(callId);
-          if (call && call.status === 'ringing') {
-            console.log(`[Call] Call ${callId} timed out`);
-            activeCalls.delete(callId);
-            userCallMap.delete(userId);
-            userCallMap.delete(toUserId);
-            sendToUser(userId, { type: 'call:timeout', callId, toUserId });
-            sendToUser(toUserId, { type: 'call:timeout', callId, fromUserId: userId });
-          }
-        }, 45000);
-
-        activeCalls.set(callId, {
-          callerId: userId,
-          calleeId: toUserId,
-          offerSdp: sdp,
-          status: 'ringing',
-          timeoutTimer,
-          createdAt: Date.now()
-        });
-        userCallMap.set(userId, callId);
-        userCallMap.set(toUserId, callId);
-
-        console.log(`[Call] Call ${callId} initiated by ${userId} to ${toUserId}`);
-        ws.send(JSON.stringify({ type: 'call:ringing', callId, toUserId }));
-
-        sendToUser(toUserId, {
-          type: 'call:incoming',
-          callId,
-          fromUserId: userId,
-          callerName: callerName || 'Пользователь',
-          callerAvatar: callerAvatar || '',
-          sdp
-        });
-      } else if (msg.type === 'call:answer' || msg.type === 'call_answer') {
-        const { callId, sdp } = msg;
-        const call = activeCalls.get(callId);
-        if (call && call.calleeId === userId) {
-          if (call.timeoutTimer) clearTimeout(call.timeoutTimer);
-          call.status = 'connected';
-          call.connectedAt = Date.now();
-          console.log(`[Call] Call ${callId} answered by ${userId}`);
-          sendToUser(call.callerId, {
-            type: 'call:accepted',
-            callId,
-            fromUserId: userId,
-            sdp
-          });
-        }
-      } else if (msg.type === 'call:ice' || msg.type === 'call_ice') {
-        const { callId, toUserId, candidate } = msg;
-        if (toUserId && candidate) {
-          sendToUser(toUserId, {
-            type: 'call:ice',
-            callId,
-            fromUserId: userId,
-            candidate
-          });
-        }
-      } else if (msg.type === 'call:reject' || msg.type === 'call_reject') {
-        const { callId, reason } = msg;
-        const call = activeCalls.get(callId);
-        if (call) {
-          if (call.timeoutTimer) clearTimeout(call.timeoutTimer);
-          activeCalls.delete(callId);
-          userCallMap.delete(call.callerId);
-          userCallMap.delete(call.calleeId);
-          const peerId = (call.callerId === userId) ? call.calleeId : call.callerId;
-          console.log(`[Call] Call ${callId} rejected by ${userId}`);
-          sendToUser(peerId, {
-            type: 'call:rejected',
-            callId,
-            fromUserId: userId,
-            reason: reason || 'declined'
-          });
-        }
-      } else if (msg.type === 'call:end' || msg.type === 'call_end') {
-        const currentCallId = msg.callId || userCallMap.get(userId);
-        const call = activeCalls.get(currentCallId);
-        if (call) {
-          if (call.timeoutTimer) clearTimeout(call.timeoutTimer);
-          activeCalls.delete(currentCallId);
-          userCallMap.delete(call.callerId);
-          userCallMap.delete(call.calleeId);
-          const peerId = (call.callerId === userId) ? call.calleeId : call.callerId;
-          console.log(`[Call] Call ${currentCallId} ended by ${userId}`);
-          sendToUser(peerId, {
-            type: 'call:ended',
-            callId: currentCallId,
-            fromUserId: userId
-          });
-        }
-      }
-    } catch (e) {
-      console.error('[WS] Error processing frame:', e.message);
-    }
-  });
-
-  ws.on('close', () => {
-    console.log(`[WS] User ${userId} disconnected.`);
-    const activeCallId = userCallMap.get(userId);
-    if (activeCallId) {
-      const call = activeCalls.get(activeCallId);
-      if (call) {
-        if (call.timeoutTimer) clearTimeout(call.timeoutTimer);
-        activeCalls.delete(activeCallId);
-        userCallMap.delete(call.callerId);
-        userCallMap.delete(call.calleeId);
-        const peerId = (call.callerId === userId) ? call.calleeId : call.callerId;
-        console.log(`[Call] User ${userId} disconnected during call ${activeCallId}`);
-        sendToUser(peerId, {
-          type: 'call:ended',
-          callId: activeCallId,
-          fromUserId: userId,
-          reason: 'disconnected'
-        });
-      }
-    }
-    removeClient(userId, ws);
-  });
-});
-
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`=======================================================`);
-  console.log(` SlimChat Backend Server running on port ${PORT}`);
-  console.log(` HTTP API:   http://0.0.0.0:${PORT}`);
-  console.log(` WebSocket:  ws://0.0.0.0:${PORT}/ws?token=...`);
-  console.log(` Uploads:    http://0.0.0.0:${PORT}/uploads/`);
-  console.log(`=======================================================`);
-});
-
-
-// =============================================================================
-// NEW & UPDATED ENDPOINTS ALIGNED WITH SLIMCHAT YOU APK 14.81 (VERSION 298)
-// =============================================================================
 
 // Ensure necessary database tables and columns exist for new features
 function initNewFeaturesDb() {
@@ -4973,3 +4751,229 @@ app.post('/l10n/translate', (req, res) => {
   const translations = Array.isArray(texts) ? texts : [];
   res.json({ translations });
 });
+
+
+// Fallback 404
+app.use((req, res) => {
+  console.log(`[404 NOT FOUND] ${req.method} ${req.originalUrl}`);
+  res.status(404).json({ error: `Path ${req.originalUrl} not found` });
+});
+
+// ==================== HTTP & WEBSOCKET SERVER ====================
+
+const server = http.createServer(app);
+const wss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (request, socket, head) => {
+  const urlObj = new URL(request.url, `http://${request.headers.host}`);
+  if (urlObj.pathname === '/ws') {
+    const token = urlObj.searchParams.get('token');
+    if (!token) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    const tokenRow = db.prepare('SELECT userId FROM tokens WHERE token = ? AND type = ?').get(token, 'access');
+    if (!tokenRow) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    const userId = tokenRow.userId;
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request, userId);
+    });
+  } else {
+    socket.destroy();
+  }
+});
+
+wss.on('connection', (ws, req, userId) => {
+  console.log(`[WS] User ${userId} connected.`);
+  addClient(userId, ws);
+
+  ws.on('message', (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      console.log(`[WS] From ${userId}:`, msg);
+
+      if (msg.type === 'presence') {
+        broadcastPresence(userId, msg.active !== false);
+      } else if (msg.type === 'typing') {
+        const { chatId, kind } = msg;
+        if (chatId) {
+          const cm = getChatMember(chatId, userId);
+          if (cm) {
+            broadcastToChat(chatId, {
+              type: 'typing',
+              payload: { chatId, userId, kind: kind || 'text' },
+            }, userId);
+          }
+        }
+      } else if (msg.type === 'read') {
+        const { chatId, seq } = msg;
+        if (chatId) {
+          const cm = getChatMember(chatId, userId);
+          if (cm) {
+            db.prepare('UPDATE chat_members SET lastReadSeq = ? WHERE chatId = ? AND userId = ?')
+              .run(seq || 0, chatId, userId);
+            broadcastToChat(chatId, {
+              type: 'read',
+              payload: { chatId, userId, seq },
+            }, userId);
+          }
+        }
+      } else if (msg.type === 'call:offer' || msg.type === 'call_offer') {
+        const { toUserId, sdp, callerName, callerAvatar, callId: reqCallId } = msg;
+        const callId = reqCallId || `call_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+
+        if (!toUserId) {
+          return ws.send(JSON.stringify({ type: 'call:error', error: 'Missing toUserId' }));
+        }
+
+        if (!isUserOnline(toUserId)) {
+          console.log(`[Call] ${userId} calling ${toUserId}, but callee is offline`);
+          return ws.send(JSON.stringify({ type: 'call:unavailable', callId, toUserId, reason: 'offline' }));
+        }
+
+        if (userCallMap.has(toUserId) || userCallMap.has(userId)) {
+          console.log(`[Call] Busy: ${toUserId} or ${userId} already in call`);
+          return ws.send(JSON.stringify({ type: 'call:busy', callId, toUserId }));
+        }
+
+        const timeoutTimer = setTimeout(() => {
+          const call = activeCalls.get(callId);
+          if (call && call.status === 'ringing') {
+            console.log(`[Call] Call ${callId} timed out`);
+            activeCalls.delete(callId);
+            userCallMap.delete(userId);
+            userCallMap.delete(toUserId);
+            sendToUser(userId, { type: 'call:timeout', callId, toUserId });
+            sendToUser(toUserId, { type: 'call:timeout', callId, fromUserId: userId });
+          }
+        }, 45000);
+
+        activeCalls.set(callId, {
+          callerId: userId,
+          calleeId: toUserId,
+          offerSdp: sdp,
+          status: 'ringing',
+          timeoutTimer,
+          createdAt: Date.now()
+        });
+        userCallMap.set(userId, callId);
+        userCallMap.set(toUserId, callId);
+
+        console.log(`[Call] Call ${callId} initiated by ${userId} to ${toUserId}`);
+        ws.send(JSON.stringify({ type: 'call:ringing', callId, toUserId }));
+
+        sendToUser(toUserId, {
+          type: 'call:incoming',
+          callId,
+          fromUserId: userId,
+          callerName: callerName || 'Пользователь',
+          callerAvatar: callerAvatar || '',
+          sdp
+        });
+      } else if (msg.type === 'call:answer' || msg.type === 'call_answer') {
+        const { callId, sdp } = msg;
+        const call = activeCalls.get(callId);
+        if (call && call.calleeId === userId) {
+          if (call.timeoutTimer) clearTimeout(call.timeoutTimer);
+          call.status = 'connected';
+          call.connectedAt = Date.now();
+          console.log(`[Call] Call ${callId} answered by ${userId}`);
+          sendToUser(call.callerId, {
+            type: 'call:accepted',
+            callId,
+            fromUserId: userId,
+            sdp
+          });
+        }
+      } else if (msg.type === 'call:ice' || msg.type === 'call_ice') {
+        const { callId, toUserId, candidate } = msg;
+        if (toUserId && candidate) {
+          sendToUser(toUserId, {
+            type: 'call:ice',
+            callId,
+            fromUserId: userId,
+            candidate
+          });
+        }
+      } else if (msg.type === 'call:reject' || msg.type === 'call_reject') {
+        const { callId, reason } = msg;
+        const call = activeCalls.get(callId);
+        if (call) {
+          if (call.timeoutTimer) clearTimeout(call.timeoutTimer);
+          activeCalls.delete(callId);
+          userCallMap.delete(call.callerId);
+          userCallMap.delete(call.calleeId);
+          const peerId = (call.callerId === userId) ? call.calleeId : call.callerId;
+          console.log(`[Call] Call ${callId} rejected by ${userId}`);
+          sendToUser(peerId, {
+            type: 'call:rejected',
+            callId,
+            fromUserId: userId,
+            reason: reason || 'declined'
+          });
+        }
+      } else if (msg.type === 'call:end' || msg.type === 'call_end') {
+        const currentCallId = msg.callId || userCallMap.get(userId);
+        const call = activeCalls.get(currentCallId);
+        if (call) {
+          if (call.timeoutTimer) clearTimeout(call.timeoutTimer);
+          activeCalls.delete(currentCallId);
+          userCallMap.delete(call.callerId);
+          userCallMap.delete(call.calleeId);
+          const peerId = (call.callerId === userId) ? call.calleeId : call.callerId;
+          console.log(`[Call] Call ${currentCallId} ended by ${userId}`);
+          sendToUser(peerId, {
+            type: 'call:ended',
+            callId: currentCallId,
+            fromUserId: userId
+          });
+        }
+      }
+    } catch (e) {
+      console.error('[WS] Error processing frame:', e.message);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log(`[WS] User ${userId} disconnected.`);
+    const activeCallId = userCallMap.get(userId);
+    if (activeCallId) {
+      const call = activeCalls.get(activeCallId);
+      if (call) {
+        if (call.timeoutTimer) clearTimeout(call.timeoutTimer);
+        activeCalls.delete(activeCallId);
+        userCallMap.delete(call.callerId);
+        userCallMap.delete(call.calleeId);
+        const peerId = (call.callerId === userId) ? call.calleeId : call.callerId;
+        console.log(`[Call] User ${userId} disconnected during call ${activeCallId}`);
+        sendToUser(peerId, {
+          type: 'call:ended',
+          callId: activeCallId,
+          fromUserId: userId,
+          reason: 'disconnected'
+        });
+      }
+    }
+    removeClient(userId, ws);
+  });
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`=======================================================`);
+  console.log(` SlimChat Backend Server running on port ${PORT}`);
+  console.log(` HTTP API:   http://0.0.0.0:${PORT}`);
+  console.log(` WebSocket:  ws://0.0.0.0:${PORT}/ws?token=...`);
+  console.log(` Uploads:    http://0.0.0.0:${PORT}/uploads/`);
+  console.log(`=======================================================`);
+});
+
+
+// =============================================================================
+// NEW & UPDATED ENDPOINTS ALIGNED WITH SLIMCHAT YOU APK 14.81 (VERSION 298)
+// =============================================================================
+
