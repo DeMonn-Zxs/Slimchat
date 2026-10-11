@@ -1,0 +1,13 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+*.apk
+*.zip
+*.keystore
+jadx_out
+apk_mod
+dummy*
+scratch
+slimchat.db*
+uploads

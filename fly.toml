@@ -1,0 +1,27 @@
+# fly.toml app configuration file for SlimChat Backend
+app = 'slimchat'
+primary_region = 'ams'
+
+[build]
+
+[env]
+  PORT = '8080'
+  DB_PATH = '/data/slimchat.db'
+  UPLOADS_DIR = '/data/uploads'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ['app']
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 1
+
+[mounts]
+  source = 'slimchat_data'
+  destination = '/data'
