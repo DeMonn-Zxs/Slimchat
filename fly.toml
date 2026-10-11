@@ -1,13 +1,21 @@
-# fly.toml app configuration file for SlimChat Backend
-app = 'slimchat'
+# fly.toml app configuration file generated for slimchat-you on 2026-10-11T07:32:21Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'slimchat-you'
 primary_region = 'ams'
 
 [build]
-
 [env]
-  PORT = '8080'
   DB_PATH = '/data/slimchat.db'
+  PORT = '8080'
   UPLOADS_DIR = '/data/uploads'
+
+[[mounts]]
+  source = 'slimchat_data'
+  destination = '/data'
+  initial_size = '50gb'
 
 [http_service]
   internal_port = 8080
@@ -18,11 +26,7 @@ primary_region = 'ams'
   processes = ['app']
 
 [[vm]]
-  cpus = 4
-  cpu_kind = 'shared'
   memory = '4096mb'
-
-[mounts]
-  source = 'slimchat_data'
-  destination = '/data'
-  initial_size = '50gb'
+  cpu_kind = 'shared'
+  cpus = 4
+  memory_mb = 4096
