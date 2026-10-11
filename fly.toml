@@ -18,10 +18,11 @@ primary_region = 'ams'
   processes = ['app']
 
 [[vm]]
-  memory = '512mb'
+  cpus = 4
   cpu_kind = 'shared'
-  cpus = 1
+  memory = '4096mb'
 
 [mounts]
   source = 'slimchat_data'
   destination = '/data'
+  initial_size = '50gb'
